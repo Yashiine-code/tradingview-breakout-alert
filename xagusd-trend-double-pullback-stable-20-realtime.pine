@@ -1,0 +1,239 @@
+//@version=6
+indicator("XAGUSD Trend Double Pullback Stable 20 Realtime",
+     overlay = true,
+     max_labels_count = 500,
+     max_lines_count = 500)
+
+// =========================
+// 1. EMA SETTINGS 均线设置
+// =========================
+groupEMA = "EMA SETTINGS 均线设置"
+
+shortEmaTopLen = input.int(12, "Short EMA 1 Top / 动力", minval = 1, group = groupEMA)
+shortEmaBotLen = input.int(25, "Short EMA 2 Bottom / 支撑", minval = 1, group = groupEMA)
+mediumEmaTopLen = input.int(50, "Medium EMA 1 Top / 防守", minval = 1, group = groupEMA)
+mediumEmaBotLen = input.int(70, "Medium EMA 2 Bottom / 整体", minval = 1, group = groupEMA)
+baselineLen = input.int(199, "Baseline / Visual Only", minval = 1, group = groupEMA)
+
+// =========================
+// 2. TREND FILTER 趋势过滤
+// =========================
+groupTrend = "TREND FILTER 趋势过滤"
+
+trendStabilityBars = input.int(20, "Trend Stability Bars / 稳定K线数", minval = 1, group = groupTrend)
+cooldownBars = input.int(10, "Signal Cooldown / 信号冷却", minval = 0, group = groupTrend)
+breakoutToleranceBars = input.int(5, "Breakout Tolerance Bars / 破位容忍度", minval = 1, group = groupTrend)
+
+// =========================
+// 3. REALTIME SETTINGS 实时设置
+// =========================
+groupRealtime = "REALTIME SETTINGS 实时设置"
+
+signalMode = input.string(
+     "Realtime / 实时触发",
+     "Signal Mode / 信号模式",
+     options = ["Realtime / 实时触发", "Close Confirmed / 收盘确认"],
+     group = groupRealtime)
+
+useDynamicAlert = input.bool(true, "Use alert() Dynamic Message / 动态提醒", group = groupRealtime)
+showRiskLines = input.bool(true, "Show Entry/SL/TP Lines / 显示入场止损止盈线", group = groupRealtime)
+
+// =========================
+// 4. 入场过滤
+// =========================
+groupEntry = "入场过滤"
+
+enableLong = input.bool(true, "允许做多", group = groupEntry)
+enableShort = input.bool(true, "允许做空", group = groupEntry)
+minBodyAtr = input.float(0.08, "最小实体 ATR倍数", step = 0.01, group = groupEntry)
+maxDistanceAtr = input.float(2.2, "距离50EMA最大ATR倍数", step = 0.1, group = groupEntry)
+
+// =========================
+// 5. 止盈止损提示
+// =========================
+groupRisk = "止盈止损提示"
+
+atrLen = input.int(14, "ATR周期", minval = 1, group = groupRisk)
+slAtr = input.float(1.2, "ATR保护止损倍数", step = 0.1, group = groupRisk)
+rr = input.float(1.8, "盈亏比", step = 0.1, group = groupRisk)
+swingLen = input.int(8, "结构高低点周期", minval = 1, group = groupRisk)
+bufferAtr = input.float(0.3, "结构止损缓冲ATR", step = 0.1, group = groupRisk)
+
+// =========================
+// 6. VISUAL SETTINGS 视觉设置
+// =========================
+groupVisual = "VISUAL SETTINGS 视觉设置"
+
+showTrendBackground = input.bool(true, "Show Trend Background", group = groupVisual)
+
+// =========================
+// 7. 均线计算
+// =========================
+emaShortTop = ta.ema(close, shortEmaTopLen)
+emaShortBot = ta.ema(close, shortEmaBotLen)
+emaMediumTop = ta.ema(close, mediumEmaTopLen)
+emaMediumBot = ta.ema(close, mediumEmaBotLen)
+emaBase = ta.ema(close, baselineLen)
+
+shortBandTop = math.max(emaShortTop, emaShortBot)
+shortBandBot = math.min(emaShortTop, emaShortBot)
+
+mediumBandTop = math.max(emaMediumTop, emaMediumBot)
+mediumBandBot = math.min(emaMediumTop, emaMediumBot)
+
+// =========================
+// 8. 趋势结构
+// =========================
+rawBullTrend = emaShortTop > emaShortBot and emaShortBot > emaMediumTop and emaMediumTop > emaMediumBot
+rawBearTrend = emaShortTop < emaShortBot and emaShortBot < emaMediumTop and emaMediumTop < emaMediumBot
+
+bullStableBars = nz(ta.barssince(not rawBullTrend), 100000)
+bearStableBars = nz(ta.barssince(not rawBearTrend), 100000)
+
+bullTrend = rawBullTrend and bullStableBars >= trendStabilityBars
+bearTrend = rawBearTrend and bearStableBars >= trendStabilityBars
+
+// =========================
+// 9. 实时信号逻辑
+// =========================
+atr = ta.atr(atrLen)
+body = math.abs(close - open)
+
+bodyOk = body >= atr * minBodyAtr
+
+distanceFrom50 = math.abs(close - emaMediumTop) / atr
+distanceOk = distanceFrom50 <= maxDistanceAtr
+
+// 多头：回踩 12/25 或 50/70 后，重新站回短期带上方
+longShortPullback = ta.lowest(low, breakoutToleranceBars) <= shortBandBot
+longMediumPullback = ta.lowest(low, breakoutToleranceBars) <= mediumBandTop
+longReclaim = close > shortBandTop and close > open
+
+// 空头：反弹到 12/25 或 50/70 后，重新跌回短期带下方
+shortShortPullback = ta.highest(high, breakoutToleranceBars) >= shortBandTop
+shortMediumPullback = ta.highest(high, breakoutToleranceBars) >= mediumBandBot
+shortReject = close < shortBandBot and close < open
+
+var int lastSignalBar = na
+cooldownOk = na(lastSignalBar) or bar_index - lastSignalBar >= cooldownBars
+
+confirmOnClose = signalMode == "Close Confirmed / 收盘确认"
+barConfirmOk = not confirmOnClose or barstate.isconfirmed
+
+longSignal = enableLong and bullTrend and bodyOk and distanceOk and cooldownOk and barConfirmOk and longReclaim and (longShortPullback or longMediumPullback)
+shortSignal = enableShort and bearTrend and bodyOk and distanceOk and cooldownOk and barConfirmOk and shortReject and (shortShortPullback or shortMediumPullback)
+
+// =========================
+// 10. 实时止损止盈计算
+// =========================
+recentHigh = ta.highest(high, swingLen)[1]
+recentLow = ta.lowest(low, swingLen)[1]
+
+var float activeEntry = na
+var float activeStop = na
+var float activeTake = na
+var int lastDirection = 0
+
+if longSignal
+    stopByAtr = close - atr * slAtr
+    stopByStruct = recentLow - atr * bufferAtr
+    finalStop = na(recentLow) ? stopByAtr : math.max(stopByAtr, stopByStruct)
+    finalStop := finalStop >= close ? stopByAtr : finalStop
+
+    risk = close - finalStop
+
+    activeEntry := close
+    activeStop := finalStop
+    activeTake := close + risk * rr
+    lastDirection := 1
+    lastSignalBar := bar_index
+
+if shortSignal
+    stopByAtr = close + atr * slAtr
+    stopByStruct = recentHigh + atr * bufferAtr
+    finalStop = na(recentHigh) ? stopByAtr : math.min(stopByAtr, stopByStruct)
+    finalStop := finalStop <= close ? stopByAtr : finalStop
+
+    risk = finalStop - close
+
+    activeEntry := close
+    activeStop := finalStop
+    activeTake := close - risk * rr
+    lastDirection := -1
+    lastSignalBar := bar_index
+
+// =========================
+// 11. 实时 alert() 动态提醒
+// TradingView 创建提醒时，条件选择：Any alert() function call
+// =========================
+if useDynamicAlert and longSignal
+    alert(
+         "XAGUSD 实时买点 | Entry: " + str.tostring(activeEntry, format.mintick) +
+         " | SL: " + str.tostring(activeStop, format.mintick) +
+         " | TP: " + str.tostring(activeTake, format.mintick),
+         alert.freq_once_per_bar)
+
+if useDynamicAlert and shortSignal
+    alert(
+         "XAGUSD 实时卖点 | Entry: " + str.tostring(activeEntry, format.mintick) +
+         " | SL: " + str.tostring(activeStop, format.mintick) +
+         " | TP: " + str.tostring(activeTake, format.mintick),
+         alert.freq_once_per_bar)
+
+// =========================
+// 12. 图表显示
+// =========================
+pShortTop = plot(emaShortTop, "EMA 12 动力", color = color.new(color.fuchsia, 0), linewidth = 2)
+pShortBot = plot(emaShortBot, "EMA 25 支撑", color = color.new(color.fuchsia, 35), linewidth = 2)
+
+fill(
+     pShortTop,
+     pShortBot,
+     color = emaShortTop >= emaShortBot ? color.new(color.green, 82) : color.new(color.red, 82),
+     title = "短期趋势彩带")
+
+pMediumTop = plot(emaMediumTop, "EMA 50 防守", color = color.new(color.orange, 0), linewidth = 2)
+pMediumBot = plot(emaMediumBot, "EMA 70 整体", color = color.new(color.orange, 35), linewidth = 2)
+
+fill(
+     pMediumTop,
+     pMediumBot,
+     color = emaMediumTop >= emaMediumBot ? color.new(color.orange, 85) : color.new(color.red, 87),
+     title = "中期趋势彩带")
+
+plot(emaBase, "EMA 199 Baseline", color = color.new(color.purple, 0), linewidth = 2)
+
+bgcolor(
+     showTrendBackground and bullTrend ? color.new(color.green, 90) :
+     showTrendBackground and bearTrend ? color.new(color.red, 90) :
+     na)
+
+plotshape(
+     longSignal,
+     title = "实时买点",
+     text = "买",
+     style = shape.labelup,
+     location = location.belowbar,
+     color = color.new(color.green, 0),
+     textcolor = color.white,
+     size = size.tiny)
+
+plotshape(
+     shortSignal,
+     title = "实时卖点",
+     text = "卖",
+     style = shape.labeldown,
+     location = location.abovebar,
+     color = color.new(color.red, 0),
+     textcolor = color.white,
+     size = size.tiny)
+
+plot(showRiskLines ? activeEntry : na, "Last Signal Entry", color = color.new(color.blue, 0), style = plot.style_linebr, linewidth = 1)
+plot(showRiskLines ? activeStop : na, "Last Signal SL", color = color.new(color.red, 0), style = plot.style_linebr, linewidth = 1)
+plot(showRiskLines ? activeTake : na, "Last Signal TP", color = color.new(color.green, 0), style = plot.style_linebr, linewidth = 1)
+
+// =========================
+// 13. 固定提醒条件
+// =========================
+alertcondition(longSignal, title = "XAGUSD 实时买点提醒", message = "XAGUSD 出现实时买点")
+alertcondition(shortSignal, title = "XAGUSD 实时卖点提醒", message = "XAGUSD 出现实时卖点")
